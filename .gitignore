@@ -3,3 +3,4 @@ dist/
 dataset_root/
 .tmp-test-dataset/
 *.log
+dataset_root/
