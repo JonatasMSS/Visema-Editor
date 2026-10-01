@@ -4,6 +4,7 @@ import {existsSync} from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createProgressStore} from './progress.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const datasetRoot = path.resolve(process.env.DATASET_ROOT || path.join(root, 'dataset_root'));
@@ -13,6 +14,7 @@ const production = process.argv.includes('--production');
 const port = Number(process.env.PORT || 4173);
 const idPattern = /^segmento_\d+$/;
 const busy = new Set();
+const progress = createProgressStore(path.join(datasetRoot, '.progress.json'));
 const app = express();
 
 app.use(express.json({limit: '2mb'}));
@@ -38,46 +40,67 @@ function run(command, args) {
   });
 }
 
-async function durationOf(file) {
-  return new Promise((resolve, reject) => {
+const parseRate = (value) => {
+  const [numerator, denominator = 1] = String(value || '').split('/').map(Number);
+  const rate = numerator / denominator;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+};
+
+// Duração, taxa de quadros e número de quadros do primeiro fluxo de vídeo.
+async function probeVideo(file) {
+  const stdout = await new Promise((resolve, reject) => {
     const child = spawn('ffprobe', [
-      '-v', 'error', '-show_entries', 'format=duration',
-      '-of', 'default=nw=1:nk=1', file,
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=avg_frame_rate,r_frame_rate,nb_frames,duration:format=duration',
+      '-of', 'json', file,
     ], {windowsHide: true});
-    let stdout = '';
+    let output = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', (code) => code === 0
-      ? resolve(Number.parseFloat(stdout))
+      ? resolve(output)
       : reject(new Error(stderr || 'Não foi possível ler a duração.')));
   });
+  const info = JSON.parse(stdout);
+  const stream = info.streams?.[0] ?? {};
+  const fps = parseRate(stream.avg_frame_rate) ?? parseRate(stream.r_frame_rate) ?? 25;
+  const duration = Number.parseFloat(info.format?.duration ?? stream.duration);
+  const frames = Number.parseInt(stream.nb_frames, 10) || Math.round(duration * fps);
+  if (!Number.isFinite(duration) || !frames) throw new Error('Não foi possível ler a duração.');
+  return {duration, fps, frames};
 }
 
-function validatedRanges(input, duration) {
+// Converte os intervalos (em segundos) para quadros inteiros e funde os adjacentes,
+// que surgem quando um bloco foi apenas dividido na linha do tempo.
+function validatedRanges(input, {fps, frames}) {
   if (!Array.isArray(input)) throw new Error('Intervalos inválidos.');
+  const toFrame = (seconds) => Math.max(0, Math.min(frames, Math.round(seconds * fps)));
   const ranges = input
     .map(({start, end}) => ({start: Number(start), end: Number(end)}))
     .filter(({start, end}) => Number.isFinite(start) && Number.isFinite(end))
-    .map(({start, end}) => ({
-      start: Math.max(0, Math.min(duration, start)),
-      end: Math.max(0, Math.min(duration, end)),
-    }))
-    .filter(({start, end}) => end - start >= 0.04)
-    .sort((a, b) => a.start - b.start);
+    .map(({start, end}) => ({startFrame: toFrame(start), endFrame: toFrame(end)}))
+    .filter(({startFrame, endFrame}) => endFrame > startFrame)
+    .sort((a, b) => a.startFrame - b.startFrame);
 
   if (!ranges.length) throw new Error('O clipe não pode ser salvo sem nenhum trecho. Exclua o clipe inteiro.');
-  for (let index = 1; index < ranges.length; index += 1) {
-    if (ranges[index].start < ranges[index - 1].end) throw new Error('Há intervalos sobrepostos.');
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last && range.startFrame < last.endFrame) throw new Error('Há intervalos sobrepostos.');
+    if (last && range.startFrame === last.endFrame) last.endFrame = range.endFrame;
+    else merged.push({...range});
   }
-  return ranges;
+  return merged.map(({startFrame, endFrame}) => ({startFrame, endFrame, start: startFrame / fps, end: endFrame / fps}));
 }
 
+// O vídeo é cortado por índice de quadro, imune a arredondamento de tempo;
+// o áudio usa os mesmos limites convertidos para segundos.
 function filterGraph(ranges, kind) {
-  const chain = ranges.map(({start, end}, index) => (
+  const chain = ranges.map(({startFrame, endFrame, start, end}, index) => (
     kind === 'video'
-      ? `[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[v${index}]`
+      ? `[0:v]trim=start_frame=${startFrame}:end_frame=${endFrame},setpts=PTS-STARTPTS[v${index}]`
       : `[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a${index}]`
   ));
   const inputs = ranges.map((_, index) => `[${kind === 'video' ? 'v' : 'a'}${index}]`).join('');
@@ -125,13 +148,16 @@ app.get('/api/clips', async (request, response, next) => {
     const page = Math.max(1, Number.parseInt(request.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(12, Number.parseInt(request.query.limit, 10) || 48));
     const query = String(request.query.query || '').trim().toLocaleLowerCase('pt-BR');
-    const names = (await fs.readdir(videoDir))
+    const status = ['done', 'pending'].includes(request.query.status) ? request.query.status : 'all';
+    const [entries, done] = await Promise.all([fs.readdir(videoDir), progress.load()]);
+    const names = entries
       .filter((name) => name.endsWith('.mp4'))
       .map((name) => path.basename(name, '.mp4'))
       .sort();
-    let filtered = names;
+    const doneCount = names.filter((id) => done[id]).length;
+    let filtered = status === 'all' ? names : names.filter((id) => Boolean(done[id]) === (status === 'done'));
     if (query) {
-      const matches = await Promise.all(names.map(async (id) => {
+      const matches = await Promise.all(filtered.map(async (id) => {
         if (id.toLocaleLowerCase('pt-BR').includes(query)) return id;
         const text = await fs.readFile(path.join(textDir, `${id}.txt`), 'utf8').catch(() => '');
         return text.toLocaleLowerCase('pt-BR').includes(query) ? id : null;
@@ -142,8 +168,12 @@ app.get('/api/clips', async (request, response, next) => {
     const items = await Promise.all(filtered.slice(start, start + limit).map(async (id) => ({
       id,
       text: (await fs.readFile(path.join(textDir, `${id}.txt`), 'utf8').catch(() => '')).slice(0, 150),
+      done: Boolean(done[id]),
     })));
-    response.json({items, page, pages: Math.max(1, Math.ceil(filtered.length / limit)), total: filtered.length});
+    response.json({
+      items, page, pages: Math.max(1, Math.ceil(filtered.length / limit)), total: filtered.length,
+      doneCount, clipCount: names.length,
+    });
   } catch (error) { next(error); }
 });
 
@@ -153,11 +183,13 @@ app.get('/api/clips/:id', async (request, response, next) => {
     if (!existsSync(files.video) || !existsSync(files.audio) || !existsSync(files.text)) {
       return response.status(404).json({error: 'Clipe incompleto ou inexistente.'});
     }
-    const [text, duration] = await Promise.all([
+    const [text, {duration, fps, frames}, done] = await Promise.all([
       fs.readFile(files.text, 'utf8'),
-      durationOf(files.video),
+      probeVideo(files.video),
+      progress.load(),
     ]);
-    response.json({id: request.params.id, text, duration});
+    const doneAt = done[request.params.id] ?? null;
+    response.json({id: request.params.id, text, duration, fps, frames, done: Boolean(doneAt), doneAt});
   } catch (error) { next(error); }
 });
 
@@ -180,12 +212,12 @@ app.post('/api/clips/:id/save', async (request, response, next) => {
     if (!existsSync(files.video) || !existsSync(files.audio) || !existsSync(files.text)) {
       return response.status(404).json({error: 'Clipe incompleto ou inexistente.'});
     }
-    const duration = await durationOf(files.video);
-    const ranges = validatedRanges(request.body.ranges, duration);
+    const video = await probeVideo(files.video);
+    const ranges = validatedRanges(request.body.ranges, video);
     const text = String(request.body.text ?? '');
     if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new Error('O texto excede 1 MB.');
-    const editedDuration = ranges.reduce((sum, range) => sum + range.end - range.start, 0);
-    const mediaChanged = ranges.length !== 1 || ranges[0].start > 0.01 || Math.abs(ranges[0].end - duration) > 0.04;
+    const editedDuration = ranges.reduce((sum, range) => sum + range.endFrame - range.startFrame, 0) / video.fps;
+    const mediaChanged = ranges.length !== 1 || ranges[0].startFrame !== 0 || ranges[0].endFrame !== video.frames;
     const nonce = `${process.pid}-${Date.now()}`;
     const outputs = {
       video: path.join(videoDir, `.${id}-${nonce}.mp4`),
@@ -214,6 +246,17 @@ app.post('/api/clips/:id/save', async (request, response, next) => {
   }
 });
 
+app.put('/api/clips/:id/done', async (request, response, next) => {
+  try {
+    const id = request.params.id;
+    const files = pathsFor(id);
+    if (typeof request.body?.done !== 'boolean') throw new Error('Informe "done" como verdadeiro ou falso.');
+    if (!existsSync(files.video)) return response.status(404).json({error: 'Clipe inexistente.'});
+    const doneAt = await progress.setDone(id, request.body.done);
+    response.json({id, done: Boolean(doneAt), doneAt});
+  } catch (error) { next(error); }
+});
+
 app.delete('/api/clips/:id', async (request, response, next) => {
   try {
     const id = request.params.id;
@@ -222,6 +265,7 @@ app.delete('/api/clips/:id', async (request, response, next) => {
     if (!Object.values(files).some(existsSync)) return response.status(404).json({error: 'Clipe inexistente.'});
     const destination = await snapshot(id, files, path.join(datasetRoot, '.trash'));
     await Promise.all(Object.values(files).map((file) => fs.rm(file, {force: true})));
+    await progress.setDone(id, false);
     response.json({ok: true, recoverableAt: destination});
   } catch (error) { next(error); }
 });
