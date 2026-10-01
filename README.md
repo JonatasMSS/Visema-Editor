@@ -37,13 +37,24 @@ O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `se
 - Mostra uma prévia textual de cada segmento.
 - Solicita confirmação antes de trocar de segmento quando existem alterações não salvas.
 
+### Acompanhamento de progresso
+
+- O botão **Marcar como concluído**, no topo do editor, registra que o segmento já foi revisado; clicar de novo em **Concluído** o devolve para os pendentes.
+- Segmentos concluídos aparecem na biblioteca com um ✓ e um selo **CONCLUÍDO** no preview.
+- As abas **Pendentes**, **Concluídos** e **Todos** filtram a biblioteca e mostram quantos itens há em cada situação. A aba inicial é **Pendentes**, então o editor abre direto no próximo segmento não revisado; a última aba escolhida fica lembrada no navegador.
+- O contador `concluídos / total` e a barra abaixo do título mostram o avanço geral.
+- Marcar como concluído com alterações ainda não salvas pede confirmação.
+- O registro fica em `dataset_root/.progress.json` (`{"done": {"segmento_00001": "<data ISO>"}}`), sobrevive a recarregamentos e pode ser editado ou apagado manualmente. Excluir um clipe remove também a marcação dele.
+
 ### Preview sincronizado
 
 - Exibe o vídeo do arquivo `.mp4`.
 - Reproduz o áudio do arquivo `.wav` simultaneamente.
 - Corrige diferenças perceptíveis entre as posições do vídeo e do áudio durante a reprodução.
-- Permite pausar, avançar ou retroceder um segundo.
-- Permite navegar pelo clipe usando a linha do tempo.
+- Permite pausar, avançar ou retroceder um segundo ou um único quadro.
+- Mostra a posição como timecode `MM:SS:QQ` (minutos, segundos, quadros) e o número do quadro.
+- Indica com um ponto verde quando o quadro pintado pelo navegador é exatamente o quadro do cursor.
+- Permite navegar pelo clipe arrastando o cursor da linha do tempo.
 - Permite ajustar o volume do WAV sem alterar o arquivo original.
 - Durante a prévia, ignora os intervalos já marcados para remoção.
 
@@ -56,6 +67,31 @@ O sistema usa o WAV como fonte de áudio. O MP4 esperado pelo dataset pode conte
 - Ao remover um intervalo audiovisual, tenta remover as palavras correspondentes àquele momento.
 - A edição é salva em UTF-8 no arquivo `.txt` associado.
 
+### Linha do tempo por blocos
+
+Inspirada no CapCut, a linha do tempo trabalha em quadros inteiros: o cursor, as divisões e os cortes sempre caem numa fronteira de quadro.
+
+| Ferramenta | Atalho | Efeito |
+| --- | --- | --- |
+| Dividir | `Ctrl+B` | Divide o bloco sob o cursor; o quadro atual passa a ser o primeiro do bloco da direita. |
+| Excluir à esquerda | `Q` | Remove do início do bloco até o quadro anterior ao cursor. |
+| Excluir à direita | `W` | Remove do quadro atual até o fim do bloco. |
+| Excluir selecionado | `Delete` / `Backspace` | Remove o bloco selecionado (clique num bloco para selecioná-lo). |
+| Desfazer / Refazer | `Ctrl+Z` / `Ctrl+Shift+Z` ou `Ctrl+Y` | Navega pelo histórico de edições. |
+
+Navegação:
+
+- arraste o cursor (alça branca), a régua ou um bloco para percorrer o vídeo; a imagem acompanha o arraste;
+- `←` / `→` voltam ou avançam um quadro; com `Shift`, um segundo;
+- `Home` / `End` vão ao primeiro ou ao último quadro;
+- `Espaço` reproduz ou pausa;
+- `I` / `O` marcam entrada e saída;
+- `Ctrl` + roda do mouse, ou o controle de zoom, ampliam a linha do tempo até o modo **Quadro a quadro**, em que cada quadro aparece como uma célula e o quadro atual fica destacado.
+
+Os atalhos ficam desativados enquanto o foco está na transcrição ou num campo numérico.
+
+Dividir um bloco não altera a mídia por si só: blocos adjacentes são fundidos ao salvar.
+
 ### Corte de segmentos
 
 - Permite definir uma marca de entrada e uma marca de saída.
@@ -64,7 +100,8 @@ O sistema usa o WAV como fonte de áudio. O MP4 esperado pelo dataset pode conte
 - Exibe quais partes serão mantidas e quais serão removidas.
 - Mostra as durações totais mantida e removida.
 - Impede salvar um segmento sem nenhum trecho. Para remover tudo, deve-se usar **Excluir clipe**.
-- Exige que o intervalo removido tenha pelo menos `0,04` segundo.
+- Exige que o intervalo removido tenha pelo menos um quadro.
+- A saída inclui o quadro exibido no momento da marcação, como em editores de vídeo.
 
 ### Exclusão completa
 
@@ -190,8 +227,8 @@ O comando `npm start` espera que `dist` já tenha sido gerado por `npm run build
 ### 2. Revisar o conteúdo
 
 1. Use o botão de reprodução para iniciar MP4 e WAV juntos.
-2. Clique na linha do tempo ou mova o controle de posição para navegar.
-3. Use `−1s` e `+1s` para ajustes rápidos.
+2. Arraste o cursor da linha do tempo ou clique na régua para navegar.
+3. Use `−1s` e `+1s` para ajustes rápidos, e `◂` / `▸` (ou as setas do teclado) para andar quadro a quadro.
 4. Corrija a transcrição diretamente no campo de texto quando necessário.
 
 ### 3. Marcar um intervalo para remoção
@@ -209,20 +246,23 @@ Também é possível digitar os tempos diretamente. O corte ainda não é gravad
 
 Repita a marcação quantas vezes forem necessárias. A linha do tempo representa:
 
-- verde: trechos mantidos;
+- verde: blocos mantidos, numerados e com sua duração;
 - vermelho hachurado: trechos removidos;
-- contorno branco: intervalo atualmente selecionado;
-- linha branca: posição atual da reprodução.
+- contorno branco grosso: bloco selecionado;
+- moldura branca: intervalo de entrada e saída;
+- linha branca com alça: cursor de reprodução.
+
+Para cortes rápidos, prefira as ferramentas de bloco: posicione o cursor e use `Ctrl+B`, `Q`, `W` ou selecione um bloco e pressione `Delete`.
 
 ### 5. Desfazer um corte
 
-Use **Desfazer** para voltar ao estado anterior ao último comando **Remover intervalo**.
+Use **Desfazer** para voltar ao estado anterior à última divisão ou remoção, e **Refazer** para reaplicá-la.
 
 O histórico de desfazer:
 
 - existe apenas na memória da página;
 - mantém no máximo 20 estados;
-- cobre remoções de intervalo ainda não salvas;
+- cobre divisões e remoções ainda não salvas;
 - não registra cada caractere digitado;
 - é reiniciado ao carregar ou salvar o segmento;
 - não desfaz um salvamento concluído.
@@ -255,9 +295,9 @@ Os arquivos são copiados para `.trash` antes de serem removidos dos diretórios
 
 ## Como o corte funciona
 
-O backend recebe uma lista ordenada dos intervalos que devem ser mantidos. Para cada intervalo:
+O backend recebe uma lista ordenada dos intervalos que devem ser mantidos. Os limites são convertidos para quadros inteiros com a taxa de quadros lida pelo `ffprobe`, e intervalos adjacentes são fundidos. Para cada intervalo:
 
-1. o vídeo é recortado com `trim`;
+1. o vídeo é recortado com `trim=start_frame=…:end_frame=…`, por índice de quadro e sem depender de arredondamento de tempo;
 2. seus timestamps são reiniciados com `setpts`;
 3. os trechos de vídeo são concatenados;
 4. o WAV é processado separadamente com `atrim` e `asetpts`;
@@ -450,9 +490,26 @@ GET /api/clips/segmento_00001
 {
   "id": "segmento_00001",
   "text": "Transcrição completa",
-  "duration": 23.88
+  "duration": 23.88,
+  "fps": 25,
+  "frames": 597
 }
 ```
+
+### Marcar como concluído
+
+```http
+PUT /api/clips/segmento_00001/done
+Content-Type: application/json
+
+{"done": true}
+```
+
+```json
+{"id": "segmento_00001", "done": true, "doneAt": "2026-10-01T23:15:00.000Z"}
+```
+
+A listagem aceita `status=pending|done|all`, inclui `done` em cada item e devolve `doneCount` e `clipCount` (totais sem filtro). A leitura de um segmento também traz `done` e `doneAt`.
 
 ### Acessar a mídia
 
@@ -517,9 +574,15 @@ O status `409` indica que o mesmo segmento já está sendo processado.
 ├── package.json           # dependências e scripts
 ├── package-lock.json      # versões das dependências
 ├── server.mjs             # API, FFmpeg, histórico e servidor
+├── progress.mjs           # registro de segmentos concluídos (.progress.json)
+├── progress.test.mjs      # testes do registro de progresso
 ├── vite.config.js         # configuração do Vite/React
 ├── src/
 │   ├── App.jsx            # interface e fluxo principal
+│   ├── Timeline.jsx       # linha do tempo: blocos, régua, cursor e zoom
+│   ├── useFramePlayer.js  # reprodução e busca quadro a quadro (vídeo + WAV)
+│   ├── timeline.js        # operações de blocos em quadros e timecode
+│   ├── timeline.test.js   # testes da lógica de quadros e blocos
 │   ├── editor.js          # operações de intervalos e texto
 │   ├── editor.test.js     # teste da lógica de edição
 │   ├── main.jsx           # inicialização do React
@@ -534,7 +597,9 @@ O status `409` indica que o mesmo segmento já está sendo processado.
 npm test
 ```
 
-O teste atual confirma que um intervalo interno é retirado da lista de trechos mantidos e que as palavras estimadas dentro dele são removidas da transcrição.
+Os testes confirmam que um intervalo interno é retirado da lista de trechos mantidos com as palavras estimadas dentro dele, e cobrem a lógica de quadros: ida e volta tempo → quadro em várias taxas, divisão, exclusão à esquerda/direita, exclusão de bloco, fusão de blocos adjacentes, timecode e régua.
+
+A precisão quadro a quadro também foi conferida num navegador real com uma cópia isolada de um segmento a 25 fps: os pixels exibidos após setas, arraste e cliques com zoom foram comparados com os quadros extraídos pelo FFmpeg; a reprodução atravessou um trecho removido sem exibir quadros dele; e o MP4 salvo continha exatamente os quadros mantidos.
 
 Para verificar o bundle de produção:
 
@@ -580,7 +645,11 @@ A duração de referência vem do MP4. O editor pressupõe que o WAV está alinh
 
 ### Sem waveform ou miniaturas
 
-A linha do tempo representa somente intervalos mantidos, removidos e selecionados.
+A linha do tempo representa blocos mantidos, removidos e selecionados, sem miniaturas do vídeo.
+
+### Linha do tempo em tempo de origem
+
+Os blocos ficam na posição original do clipe e os trechos removidos continuam visíveis como lacunas; diferentemente do CapCut, os blocos seguintes não se deslocam para preencher o espaço. A reprodução pula as lacunas.
 
 ### Desfazer limitado
 
