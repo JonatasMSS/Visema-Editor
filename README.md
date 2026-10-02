@@ -17,7 +17,7 @@ O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `se
 - [Como o corte funciona](#como-o-corte-funciona)
 - [Como o texto é sincronizado](#como-o-texto-é-sincronizado)
 - [Salvamento, histórico e exclusão](#salvamento-histórico-e-exclusão)
-- [Labels: comportamento atual](#labels-comportamento-atual)
+- [Labels (CSVs)](#labels-csvs)
 - [Configuração](#configuração)
 - [Scripts disponíveis](#scripts-disponíveis)
 - [API local](#api-local)
@@ -65,7 +65,14 @@ O sistema usa o WAV como fonte de áudio. O MP4 esperado pelo dataset pode conte
 - O texto completo pode ser editado diretamente.
 - O editor mostra a quantidade atual de palavras.
 - Ao remover um intervalo audiovisual, tenta remover as palavras correspondentes àquele momento.
-- A edição é salva em UTF-8 no arquivo `.txt` associado.
+- A edição é salva em UTF-8 no arquivo `.txt` associado, normalizada como no dataset original: maiúsculas, NFC e espaços simples.
+- A transcrição não pode ficar vazia; para descartar o segmento, use **Excluir clipe**.
+
+### Labels sincronizados
+
+- Salvar recalcula os tokens SentencePiece do texto e o número de quadros do vídeo e atualiza a linha do segmento no CSV de labels.
+- Excluir o clipe remove a linha correspondente do CSV.
+- `npm run labels` reprocessa todos os CSVs de uma vez. Detalhes em [Labels (CSVs)](#labels-csvs).
 
 ### Linha do tempo por blocos
 
@@ -280,18 +287,19 @@ Depois do salvamento:
 
 - MP4, WAV e TXT continuam com seus nomes originais;
 - MP4 e WAV passam a conter somente os trechos mantidos;
-- a versão anterior do trio é preservada em `.history`;
-- o segmento é recarregado com sua nova duração.
+- a linha do segmento no CSV de labels recebe os novos tokens e o novo número de quadros;
+- a versão anterior do trio e da linha do CSV é preservada em `.history`;
+- o segmento é recarregado com sua nova duração e o texto normalizado.
 
-Se somente o texto foi alterado, o FFmpeg não é executado e apenas o TXT é substituído. Mesmo assim, uma cópia do trio anterior é armazenada no histórico.
+Se somente o texto foi alterado, o FFmpeg não é executado e apenas o TXT e os tokens são atualizados. Mesmo assim, uma cópia do trio anterior é armazenada no histórico.
 
 ### 7. Excluir o segmento inteiro
 
 1. Clique em **Excluir clipe** no final da tela.
 2. Confirme a exclusão do MP4, WAV e TXT.
-3. O trio deixa de aparecer na biblioteca.
+3. O trio deixa de aparecer na biblioteca e sua linha é removida do CSV de labels.
 
-Os arquivos são copiados para `.trash` antes de serem removidos dos diretórios ativos.
+Os arquivos e a linha do CSV são copiados para `.trash` antes de serem removidos.
 
 ## Como o corte funciona
 
@@ -336,7 +344,7 @@ Se a fala tiver pausas longas, mudanças de velocidade ou palavras concentradas 
 
 ### Histórico de salvamento
 
-Antes de substituir os arquivos ativos, o backend copia o trio original para:
+Antes de substituir os arquivos ativos, o backend copia o trio original e a linha do segmento no CSV de labels para:
 
 ```text
 dataset_root/.history/<data-e-hora>/<identificador>/
@@ -348,20 +356,21 @@ Exemplo:
 dataset_root/.history/2026-09-24T15-10-02-115Z/segmento_00001/
 ├── segmento_00001.mp4
 ├── segmento_00001.wav
-└── segmento_00001.txt
+├── segmento_00001.txt
+└── ptbr_train_transcript_lengths_seg24s.csv   # só a linha deste segmento
 ```
 
-Cada salvamento cria uma pasta. O editor não elimina versões antigas automaticamente.
+O CSV do snapshot tem o nome do CSV de origem, o que indica o split do segmento. Cada salvamento cria uma pasta. O editor não elimina versões antigas automaticamente.
 
 ### Lixeira de exclusão
 
-Antes de excluir completamente, o backend copia o trio para:
+Antes de excluir completamente, o backend copia o trio e a linha do CSV de labels para:
 
 ```text
 dataset_root/.trash/<data-e-hora>/<identificador>/
 ```
 
-Depois remove MP4, WAV e TXT dos diretórios ativos.
+Depois remove MP4, WAV e TXT dos diretórios ativos e a linha do CSV.
 
 ### Restauração manual
 
@@ -372,7 +381,8 @@ Ainda não existe restauração na interface. Para recuperar uma versão:
 3. confirme que os três arquivos pertencem ao mesmo snapshot;
 4. copie MP4 e WAV para `ptbr/ptbr_video_seg24s`;
 5. copie o TXT para `ptbr/ptbr_text_seg24s`;
-6. reinicie o servidor.
+6. recoloque a linha do CSV do snapshot no CSV de mesmo nome em `labels` (substituindo a linha atual do segmento, se houver);
+7. reinicie o servidor e confira com `npm run labels -- --check`.
 
 Se já existirem arquivos ativos com o mesmo nome, preserve uma cópia deles antes da restauração.
 
@@ -382,26 +392,47 @@ Cada arquivo é substituído por meio de um arquivo temporário no mesmo diretó
 
 Essa proteção é individual. O conjunto MP4/WAV/TXT não usa uma única transação de filesystem. Uma falha extrema entre as três substituições pode deixar arquivos de versões diferentes nos diretórios ativos. O snapshot em `.history` permite recuperar manualmente essa situação.
 
-## Labels: comportamento atual
+## Labels (CSVs)
 
-> **Os CSVs em `dataset_root/labels` não são lidos nem modificados pelo editor.**
+Os CSVs de `dataset_root/labels` são lidos pelo Auto-AVSR no treino. Não têm cabeçalho e cada linha contém:
+
+```text
+ptbr,ptbr_video_seg24s/segmento_00001.mp4,597,174 3 28 424 …
+│    │                                    │   └─ IDs SentencePiece da transcrição
+│    │                                    └───── número de quadros do MP4 (25 fps)
+│    └────────────────────────────────────────── caminho do MP4 relativo a ptbr/
+└─────────────────────────────────────────────── dataset
+```
+
+O split (treino, validação ou teste) é dado pelo CSV em que a linha está.
+
+### Atualização automática no editor
 
 | Operação | MP4 | WAV | TXT | CSV de labels |
 | --- | --- | --- | --- | --- |
-| Editar somente o texto | Mantido | Mantido | Atualizado | Não atualizado |
-| Remover um intervalo | Recortado | Recortado | Atualizado | Não atualizado |
-| Excluir o clipe | Removido | Removido | Removido | Linha não removida |
+| Editar somente o texto | Mantido | Mantido | Atualizado | Tokens recalculados |
+| Remover um intervalo | Recortado | Recortado | Atualizado | Tokens e quadros recalculados |
+| Excluir o clipe | Removido | Removido | Removido | Linha removida |
 
-Os CSVs atuais contêm o caminho, um comprimento e uma sequência de IDs de tokens. Para atualizá-los corretamente é necessário executar exatamente o mesmo tokenizer, vocabulário, normalização e regras de particionamento usados na criação do dataset original.
+Os tokens são gerados como no notebook de preparação do dataset (`TextTransform` do Auto-AVSR): o texto é normalizado (NFC, espaços simples, maiúsculas), dividido em peças pelo SentencePiece `unigram5000_pt` e cada peça é convertida no ID de `unigram5000_pt_units.txt`. O modelo e as unidades ficam em `tokenizer/` e são executados no próprio Node (WebAssembly), sem Python. Recalcular os 686 TXTs do dataset local reproduz exatamente os IDs gravados nos CSVs originais.
 
-Consequências:
+O número de quadros gravado é o do MP4 recortado; antes de substituir os arquivos, o backend confere que o vídeo gerado tem exatamente os quadros mantidos.
 
-- editar o TXT pode deixar comprimento e tokens desatualizados;
-- cortar mídia pode deixar metadados derivados inconsistentes;
-- excluir um segmento deixa uma referência órfã no CSV correspondente;
-- `.history` e `.trash` não guardam versões dos CSVs, pois eles não são alterados.
+O editor não cria linhas novas: se um segmento não constar de nenhum CSV, mídia e texto são salvos e a interface avisa que os labels não foram encontrados.
 
-Antes de usar o dataset editado em treinamento ou avaliação, regenere os labels com o pipeline original. Não presuma que os CSVs continuam consistentes depois de uma edição.
+### Reprocessamento em lote
+
+```powershell
+npm run labels -- --check   # só relata divergências; sai com código 1 se houver
+npm run labels              # regrava tokens e quadros de todas as linhas
+npm run labels -- --prune   # também remove linhas cujo MP4 ou TXT não existe
+```
+
+O script percorre todas as linhas dos CSVs, tokeniza novamente cada TXT e lê o número de quadros de cada MP4 com `ffprobe`. Ele também informa clipes que não constam de nenhum CSV, sem adicioná-los, já que o split seria desconhecido.
+
+Linhas sem arquivos só são removidas com `--prune`, porque uma cópia parcial do dataset deixaria órfãs todas as linhas dos clipes ausentes. Antes de regravar, os CSVs anteriores são copiados para `.history/<data-e-hora>/labels/`.
+
+Use o reprocessamento após editar arquivos fora do editor, restaurar snapshots ou trocar o tokenizer. Rode-o com o editor parado: um salvamento feito durante o reprocessamento pode ser sobrescrito.
 
 ## Configuração
 
@@ -425,9 +456,14 @@ DATASET_ROOT=/dados/meu_dataset npm run dev
 O diretório ainda precisa conter as subpastas fixas:
 
 ```text
+labels
 ptbr/ptbr_video_seg24s
 ptbr/ptbr_text_seg24s
 ```
+
+### `SP_MODEL` e `SP_UNITS`
+
+Caminhos do modelo SentencePiece e da tabela de unidades. Por padrão, `tokenizer/unigram5000_pt.model` e `tokenizer/unigram5000_pt_units.txt`. Troque-os apenas junto com o tokenizer usado no treino.
 
 ### `PORT`
 
@@ -452,6 +488,7 @@ PORT=5000 npm run dev
 | `npm run build` | Gera a interface otimizada em `dist` |
 | `npm start` | Serve a API e o conteúdo já compilado |
 | `npm test` | Executa os testes da lógica de edição |
+| `npm run labels` | Reprocessa os CSVs de labels (`--check`, `--prune`) |
 
 ## API local
 
@@ -540,8 +577,10 @@ Os intervalos representam as partes **mantidas**, não as removidas. Precisam se
 Resposta:
 
 ```json
-{"ok": true, "duration": 10.1}
+{"ok": true, "duration": 10.1, "labels": "updated"}
 ```
+
+O texto é normalizado antes de ser salvo e não pode ficar vazio. `labels` vale `"missing"` quando o segmento não consta de nenhum CSV.
 
 ### Excluir o trio
 
@@ -552,7 +591,8 @@ DELETE /api/clips/segmento_00001
 ```json
 {
   "ok": true,
-  "recoverableAt": ".../dataset_root/.trash/.../segmento_00001"
+  "recoverableAt": ".../dataset_root/.trash/.../segmento_00001",
+  "labels": "removed"
 }
 ```
 
@@ -574,8 +614,14 @@ O status `409` indica que o mesmo segmento já está sendo processado.
 ├── package.json           # dependências e scripts
 ├── package-lock.json      # versões das dependências
 ├── server.mjs             # API, FFmpeg, histórico e servidor
+├── config.mjs             # caminhos do dataset e do tokenizer
+├── media.mjs              # leitura de duração e quadros com ffprobe
+├── labels.mjs             # tokenização e edição das linhas dos CSVs
+├── labels.test.mjs        # testes de tokenização e dos CSVs
+├── rebuild-labels.mjs     # reprocessamento em lote (npm run labels)
 ├── progress.mjs           # registro de segmentos concluídos (.progress.json)
 ├── progress.test.mjs      # testes do registro de progresso
+├── tokenizer/             # SentencePiece unigram5000_pt (.model e _units.txt)
 ├── vite.config.js         # configuração do Vite/React
 ├── src/
 │   ├── App.jsx            # interface e fluxo principal
@@ -597,7 +643,7 @@ O status `409` indica que o mesmo segmento já está sendo processado.
 npm test
 ```
 
-Os testes confirmam que um intervalo interno é retirado da lista de trechos mantidos com as palavras estimadas dentro dele, e cobrem a lógica de quadros: ida e volta tempo → quadro em várias taxas, divisão, exclusão à esquerda/direita, exclusão de bloco, fusão de blocos adjacentes, timecode e régua.
+Os testes confirmam que um intervalo interno é retirado da lista de trechos mantidos com as palavras estimadas dentro dele, e cobrem a lógica de quadros: ida e volta tempo → quadro em várias taxas, divisão, exclusão à esquerda/direita, exclusão de bloco, fusão de blocos adjacentes, timecode e régua. Os testes de labels conferem a normalização, comparam a tokenização com uma linha real do CSV original e cobrem a atualização e remoção de linhas, inclusive com gravações simultâneas.
 
 A precisão quadro a quadro também foi conferida num navegador real com uma cópia isolada de um segmento a 25 fps: os pixels exibidos após setas, arraste e cliques com zoom foram comparados com os quadros extraídos pelo FFmpeg; a reprodução atravessou um trecho removido sem exibir quadros dele; e o MP4 salvo continha exatamente os quadros mantidos.
 
@@ -615,9 +661,9 @@ Durante o desenvolvimento inicial, o fluxo de integração foi validado com uma 
 
 Não há timestamps por palavra. A remoção textual é proporcional e pode selecionar palavras diferentes das realmente pronunciadas. A revisão humana é necessária.
 
-### Labels não são atualizados
+### Labels de segmentos fora dos CSVs
 
-Os CSVs de `dataset_root/labels` permanecem inalterados. Consulte [Labels: comportamento atual](#labels-comportamento-atual).
+O editor só atualiza linhas existentes. Um segmento ausente de todos os CSVs não ganha linha nova, porque o split dele é desconhecido. Consulte [Labels (CSVs)](#labels-csvs).
 
 ### Formato de dataset fixo
 
@@ -685,7 +731,7 @@ Não existe controle de colaboração entre navegadores, usuários ou várias in
 
 ### Sem gerenciamento de splits e metadados
 
-O editor não move segmentos entre treino, validação e teste, não atualiza tokens e não recalcula metadados derivados.
+O editor não move segmentos entre treino, validação e teste.
 
 ### Cobertura de testes pequena
 
@@ -768,7 +814,6 @@ Revise `dataset_root/.history` e `dataset_root/.trash`. Remova apenas snapshots 
 
 Recursos que não existem atualmente, mas podem ser adicionados se o fluxo exigir:
 
-- integração com o tokenizer original para regenerar labels;
 - timestamps por palavra com alinhamento forçado;
 - visualização da forma de onda;
 - handles arrastáveis para entrada e saída;

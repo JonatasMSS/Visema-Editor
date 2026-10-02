@@ -7,9 +7,11 @@
     "dev": "node server.mjs",
     "build": "vite build",
     "start": "node server.mjs --production",
-    "test": "node --test src/editor.test.js src/timeline.test.js progress.test.mjs"
+    "test": "node --test src/editor.test.js src/timeline.test.js progress.test.mjs labels.test.mjs",
+    "labels": "node rebuild-labels.mjs"
   },
   "dependencies": {
+    "@sctg/sentencepiece-js": "^1.3.3",
     "express": "^5.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

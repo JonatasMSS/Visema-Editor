@@ -3,18 +3,17 @@ import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {datasetRoot, historyDir, labelsDir, root, textDir, tokenizerFiles, trashDir, videoDir} from './config.mjs';
+import {createLabelsStore, loadTokenizer, normalizeTranscript} from './labels.mjs';
+import {probeVideo} from './media.mjs';
 import {createProgressStore} from './progress.mjs';
 
-const root = path.dirname(fileURLToPath(import.meta.url));
-const datasetRoot = path.resolve(process.env.DATASET_ROOT || path.join(root, 'dataset_root'));
-const videoDir = path.join(datasetRoot, 'ptbr', 'ptbr_video_seg24s');
-const textDir = path.join(datasetRoot, 'ptbr', 'ptbr_text_seg24s');
 const production = process.argv.includes('--production');
 const port = Number(process.env.PORT || 4173);
 const idPattern = /^segmento_\d+$/;
 const busy = new Set();
 const progress = createProgressStore(path.join(datasetRoot, '.progress.json'));
+const labels = createLabelsStore(labelsDir, {folder: path.basename(videoDir)});
 const app = express();
 
 app.use(express.json({limit: '2mb'}));
@@ -38,38 +37,6 @@ function run(command, args) {
       ? resolve()
       : reject(new Error(`${command} encerrou com código ${code}: ${stderr.slice(-1500)}`)));
   });
-}
-
-const parseRate = (value) => {
-  const [numerator, denominator = 1] = String(value || '').split('/').map(Number);
-  const rate = numerator / denominator;
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
-};
-
-// Duração, taxa de quadros e número de quadros do primeiro fluxo de vídeo.
-async function probeVideo(file) {
-  const stdout = await new Promise((resolve, reject) => {
-    const child = spawn('ffprobe', [
-      '-v', 'error', '-select_streams', 'v:0',
-      '-show_entries', 'stream=avg_frame_rate,r_frame_rate,nb_frames,duration:format=duration',
-      '-of', 'json', file,
-    ], {windowsHide: true});
-    let output = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('error', reject);
-    child.on('close', (code) => code === 0
-      ? resolve(output)
-      : reject(new Error(stderr || 'Não foi possível ler a duração.')));
-  });
-  const info = JSON.parse(stdout);
-  const stream = info.streams?.[0] ?? {};
-  const fps = parseRate(stream.avg_frame_rate) ?? parseRate(stream.r_frame_rate) ?? 25;
-  const duration = Number.parseFloat(info.format?.duration ?? stream.duration);
-  const frames = Number.parseInt(stream.nb_frames, 10) || Math.round(duration * fps);
-  if (!Number.isFinite(duration) || !frames) throw new Error('Não foi possível ler a duração.');
-  return {duration, fps, frames};
 }
 
 // Converte os intervalos (em segundos) para quadros inteiros e funde os adjacentes,
@@ -120,14 +87,26 @@ async function renderMedia(input, output, ranges, kind) {
   await run('ffmpeg', args);
 }
 
-async function snapshot(id, files, destinationRoot) {
+// Copia o trio e, se houver, a linha do segmento nos labels, num CSV com o nome do original.
+async function snapshot(id, files, destinationRoot, label) {
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
   const destination = path.join(destinationRoot, stamp, id);
   await fs.mkdir(destination, {recursive: true});
   for (const file of Object.values(files)) {
     if (existsSync(file)) await fs.copyFile(file, path.join(destination, path.basename(file)));
   }
+  if (label) await fs.writeFile(path.join(destination, path.basename(label.file)), `${label.line}\n`, 'utf8');
   return destination;
+}
+
+// O modelo só é carregado no primeiro salvamento; uma falha permite tentar de novo.
+let tokenizer = null;
+function tokenize(text) {
+  tokenizer ??= loadTokenizer(tokenizerFiles).catch((error) => {
+    tokenizer = null;
+    throw new Error(`Não foi possível carregar o SentencePiece (${tokenizerFiles.model}): ${error.message}`);
+  });
+  return tokenizer.then((encode) => encode(text));
 }
 
 async function replaceFile(temporary, target) {
@@ -214,9 +193,12 @@ app.post('/api/clips/:id/save', async (request, response, next) => {
     }
     const video = await probeVideo(files.video);
     const ranges = validatedRanges(request.body.ranges, video);
-    const text = String(request.body.text ?? '');
+    const text = normalizeTranscript(request.body.text ?? '');
     if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new Error('O texto excede 1 MB.');
-    const editedDuration = ranges.reduce((sum, range) => sum + range.endFrame - range.startFrame, 0) / video.fps;
+    if (!text) throw new Error('A transcrição não pode ficar vazia. Para descartar o segmento, exclua o clipe.');
+    const tokens = await tokenize(text);
+    const keptFrames = ranges.reduce((sum, range) => sum + range.endFrame - range.startFrame, 0);
+    const editedDuration = keptFrames / video.fps;
     const mediaChanged = ranges.length !== 1 || ranges[0].startFrame !== 0 || ranges[0].endFrame !== video.frames;
     const nonce = `${process.pid}-${Date.now()}`;
     const outputs = {
@@ -231,14 +213,22 @@ app.post('/api/clips/:id/save', async (request, response, next) => {
         renderMedia(files.video, outputs.video, ranges, 'video'),
         renderMedia(files.audio, outputs.audio, ranges, 'audio'),
       ]);
+      // A contagem vai para o CSV; um vídeo com outro número de quadros não é aceito.
+      const rendered = await probeVideo(outputs.video);
+      if (rendered.frames !== keptFrames) {
+        throw new Error(`O vídeo recortado ficou com ${rendered.frames} quadros, mas eram esperados ${keptFrames}.`);
+      }
     }
-    await snapshot(id, files, path.join(datasetRoot, '.history'));
+    await snapshot(id, files, historyDir, await labels.find(id));
     if (mediaChanged) {
       await replaceFile(outputs.video, files.video);
       await replaceFile(outputs.audio, files.audio);
     }
     await replaceFile(outputs.text, files.text);
-    response.json({ok: true, duration: editedDuration});
+    const label = await labels.update(id, {frames: keptFrames, tokens}).catch((error) => {
+      throw new Error(`Mídia e texto foram salvos, mas o CSV de labels não foi atualizado: ${error.message}`);
+    });
+    response.json({ok: true, duration: editedDuration, labels: label ? 'updated' : 'missing'});
   } catch (error) { next(error); }
   finally {
     busy.delete(id);
@@ -263,10 +253,13 @@ app.delete('/api/clips/:id', async (request, response, next) => {
     const files = pathsFor(id);
     if (busy.has(id)) return response.status(409).json({error: 'Este clipe está sendo processado.'});
     if (!Object.values(files).some(existsSync)) return response.status(404).json({error: 'Clipe inexistente.'});
-    const destination = await snapshot(id, files, path.join(datasetRoot, '.trash'));
+    const destination = await snapshot(id, files, trashDir, await labels.find(id));
     await Promise.all(Object.values(files).map((file) => fs.rm(file, {force: true})));
+    const label = await labels.remove(id).catch((error) => {
+      throw new Error(`O clipe foi excluído, mas a linha do CSV de labels não foi removida: ${error.message}`);
+    });
     await progress.setDone(id, false);
-    response.json({ok: true, recoverableAt: destination});
+    response.json({ok: true, recoverableAt: destination, labels: label ? 'removed' : 'missing'});
   } catch (error) { next(error); }
 });
 
