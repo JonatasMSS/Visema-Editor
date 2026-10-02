@@ -22,6 +22,8 @@ const formatTime = (seconds = 0) => {
   return `${String(minutes).padStart(2, '0')}:${(safe % 60).toFixed(2).padStart(5, '0')}`;
 };
 
+const LABELS_MISSING = ' O segmento não consta em nenhum CSV de labels; confira com “npm run labels -- --check”.';
+
 async function api(url, options) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => ({}));
@@ -279,10 +281,12 @@ function App() {
     pause();
     setSaving(true);
     try {
-      await api(`/api/clips/${clip.id}/save`, {
+      const result = await api(`/api/clips/${clip.id}/save`, {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text, ranges}),
       });
-      setNotice({type: 'success', text: 'Vídeo, áudio e texto salvos com o mesmo nome.'});
+      setNotice(result.labels === 'missing'
+        ? {type: 'error', text: `Vídeo, áudio e texto salvos.${LABELS_MISSING}`}
+        : {type: 'success', text: 'Vídeo, áudio, texto e labels salvos.'});
       setRevision((value) => value + 1);
       loadLibrary(library.page);
     } catch (error) { setNotice({type: 'error', text: error.message}); }
@@ -294,8 +298,11 @@ function App() {
     pause();
     setSaving(true);
     try {
-      await api(`/api/clips/${clip.id}`, {method: 'DELETE'});
-      setNotice({type: 'success', text: 'Clipe e arquivos associados removidos. Uma cópia foi enviada à lixeira do dataset.'});
+      const result = await api(`/api/clips/${clip.id}`, {method: 'DELETE'});
+      const removed = 'Clipe e arquivos associados removidos. Uma cópia foi enviada à lixeira do dataset.';
+      setNotice(result.labels === 'missing'
+        ? {type: 'error', text: `${removed}${LABELS_MISSING}`}
+        : {type: 'success', text: `${removed} A linha do CSV de labels também foi removida.`});
       setClip(null);
       setSelected(null);
       await loadLibrary(library.page);
