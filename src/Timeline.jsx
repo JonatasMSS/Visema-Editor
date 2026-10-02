@@ -25,7 +25,7 @@ export function TimelineIcon({name}) {
 // Botões da barra não roubam o foco, assim Espaço e as setas continuam no editor.
 const keepFocus = (event) => event.preventDefault();
 
-function Timeline({fps, totalFrames, segments, selectedId, currentFrame, selection, tools, onSeek, onScrubStart, onSelectSegment}) {
+function Timeline({fps, totalFrames, segments, selectedId, currentFrame, tools, onSeek, onScrubStart, onSelectSegment}) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const dragRef = useRef(null);
@@ -178,7 +178,6 @@ function Timeline({fps, totalFrames, segments, selectedId, currentFrame, selecti
               {blockWidth > 54 && <span className="tl-segment-label"><b>{index + 1}</b>{formatTimecode(segment.end - segment.start, fps)}</span>}
             </div>;
           })}
-          {selection && <div className="tl-marks" style={{left: selection.start * pxPerFrame, width: (selection.end - selection.start) * pxPerFrame}} />}
         </div>
 
         <div className="tl-playhead" style={{transform: `translateX(${playheadX}px)`}}>
