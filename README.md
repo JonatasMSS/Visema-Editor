@@ -2,7 +2,7 @@
 
 Editor local de segmentos audiovisuais para datasets compostos por um vídeo, um áudio e uma transcrição textual com o mesmo nome-base.
 
-O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `segmento_XXXXX.mp4` é associado ao `segmento_XXXXX.wav` e ao `segmento_XXXXX.txt`. A interface permite localizar e visualizar o segmento, reproduzir vídeo e áudio em sincronia, editar a transcrição, remover intervalos e excluir o trio completo.
+O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `segmento_XXXXX.mp4` é associado ao `segmento_XXXXX.wav` e ao `segmento_XXXXX.txt`. A interface permite localizar e visualizar o segmento, reproduzir vídeo e áudio em sincronia, editar a transcrição, remover trechos pela linha do tempo e excluir o trio completo.
 
 > **Atenção:** o editor altera arquivos do dataset. Antes de substituir ou excluir conteúdo, ele cria uma cópia de segurança local, mas ainda é recomendável manter um backup externo do dataset.
 
@@ -92,135 +92,28 @@ Navegação:
 - `←` / `→` voltam ou avançam um quadro; com `Shift`, um segundo;
 - `Home` / `End` vão ao primeiro ou ao último quadro;
 - `Espaço` reproduz ou pausa;
-- `I` / `O` marcam entrada e saída;
 - `Ctrl` + roda do mouse, ou o controle de zoom, ampliam a linha do tempo até o modo **Quadro a quadro**, em que cada quadro aparece como uma célula e o quadro atual fica destacado.
 
-Os atalhos ficam desativados enquanto o foco está na transcrição ou num campo numérico.
+Os atalhos ficam desativados enquanto o foco está na transcrição.
 
 Dividir um bloco não altera a mídia por si só: blocos adjacentes são fundidos ao salvar.
 
 ### Corte de segmentos
 
-- Permite definir uma marca de entrada e uma marca de saída.
-- As marcas podem ser digitadas ou capturadas na posição atual da reprodução.
-- Permite remover mais de um intervalo antes de salvar.
+- Permite remover mais de um trecho antes de salvar.
 - Exibe quais partes serão mantidas e quais serão removidas.
 - Mostra as durações totais mantida e removida.
-- Impede salvar um segmento sem nenhum trecho. Para remover tudo, deve-se usar **Excluir clipe**.
-- Exige que o intervalo removido tenha pelo menos um quadro.
-- A saída inclui o quadro exibido no momento da marcação, como em editores de vídeo.
+- Impede remover todos os quadros de um segmento. Para remover tudo, deve-se usar **Excluir clipe**.
 
 ### Exclusão completa
 
-A opção **Excluir clipe** remove em conjunto:
+A opção **Excluir clipe** fica no menu **⋯** do cabeçalho do preview, longe dos botões de uso frequente, e pede confirmação. Ela remove em conjunto:
 
 - `segmento_XXXXX.mp4`;
 - `segmento_XXXXX.wav`;
 - `segmento_XXXXX.txt`.
 
-Antes da remoção, os três arquivos são copiados para `dataset_root/.trash`.
-
-## Organização dos arquivos
-
-A estrutura padrão esperada é:
-
-```text
-dataset_root/
-├── labels/
-│   ├── ptbr_train_transcript_lengths_seg24s.csv
-│   ├── ptbr_val_transcript_lengths_seg24s.csv
-│   └── ptbr_test_transcript_lengths_seg24s.csv
-└── ptbr/
-    ├── ptbr_text_seg24s/
-    │   ├── segmento_00001.txt
-    │   ├── segmento_00002.txt
-    │   └── ...
-    └── ptbr_video_seg24s/
-        ├── segmento_00001.mp4
-        ├── segmento_00001.wav
-        ├── segmento_00002.mp4
-        ├── segmento_00002.wav
-        └── ...
-```
-
-O nome-base precisa seguir o formato `segmento_` seguido por um ou mais números. Exemplos válidos:
-
-```text
-segmento_00001
-segmento_00231
-segmento_123456
-```
-
-A biblioteca é montada a partir dos `.mp4`. Ao abrir um item, o backend verifica se também existem o WAV e o TXT correspondentes. Se o trio estiver incompleto, o segmento não poderá ser editado e a API retornará um erro.
-
-Os diretórios abaixo são criados automaticamente durante o uso:
-
-```text
-dataset_root/
-├── .history/   # versões anteriores aos salvamentos
-└── .trash/     # arquivos removidos pela exclusão completa
-```
-
-## Tecnologias e decisões
-
-| Componente | Tecnologia | Responsabilidade |
-| --- | --- | --- |
-| Interface | React | Biblioteca, preview, texto e linha do tempo |
-| Build e desenvolvimento | Vite | Servidor de desenvolvimento e bundle de produção |
-| Backend local | Express | Leitura do dataset, streaming e salvamento |
-| Processamento audiovisual | FFmpeg | Corte, concatenação e codificação |
-| Inspeção de mídia | FFprobe | Leitura da duração dos clipes |
-| Testes | `node:test` | Verificação da lógica de intervalos e texto |
-
-O projeto não usa Remotion porque o trabalho principal é cortar arquivos existentes, não renderizar composições React quadro a quadro. FFmpeg executa esse processamento diretamente, com menor complexidade e sem depender de um navegador para produzir os arquivos finais.
-
-## Requisitos
-
-- Windows, Linux ou macOS com suporte ao Node.js e FFmpeg.
-- Node.js 20 ou superior.
-- npm.
-- FFmpeg e FFprobe disponíveis no `PATH`.
-- Navegador moderno.
-- Espaço livre para os arquivos processados e o histórico.
-
-O projeto foi desenvolvido e validado com Node.js `22.x`, npm `10.x` e FFmpeg `8.x`. Versões equivalentes mais recentes devem funcionar, mas não foram testadas individualmente.
-
-### Verificar as ferramentas
-
-```powershell
-node --version
-npm --version
-ffmpeg -version
-ffprobe -version
-```
-
-Todos os comandos devem retornar uma versão.
-
-## Instalação e execução
-
-### Desenvolvimento
-
-Na pasta do projeto:
-
-```powershell
-npm install
-npm run dev
-```
-
-Abra `http://localhost:4173`.
-
-No desenvolvimento, o Express carrega o Vite como middleware. Uma única execução inicia a interface e a API.
-
-### Produção local
-
-Gere a interface otimizada e inicie o servidor:
-
-```powershell
-npm run build
-npm start
-```
-
-O comando `npm start` espera que `dist` já tenha sido gerado por `npm run build`.
+Depois da exclusão, o editor abre o segmento seguinte da lista.
 
 ## Como usar
 
@@ -238,30 +131,20 @@ O comando `npm start` espera que `dist` já tenha sido gerado por `npm run build
 3. Use `−1s` e `+1s` para ajustes rápidos, e `◂` / `▸` (ou as setas do teclado) para andar quadro a quadro.
 4. Corrija a transcrição diretamente no campo de texto quando necessário.
 
-### 3. Marcar um intervalo para remoção
+### 3. Remover trechos
 
-1. Posicione a reprodução no começo do trecho indesejado.
-2. Clique em **Marcar entrada**.
-3. Posicione a reprodução no final do trecho.
-4. Clique em **Marcar saída**.
-5. Confira os tempos numéricos.
-6. Clique em **Remover intervalo**.
+1. Posicione o cursor no início ou no fim do trecho indesejado.
+2. Use `Ctrl+B` para dividir o bloco, `Q` / `W` para excluir à esquerda ou à direita do cursor, ou selecione um bloco e pressione `Delete`.
+3. Repita quantas vezes forem necessárias.
 
-Também é possível digitar os tempos diretamente. O corte ainda não é gravado no disco nessa etapa: a interface apenas atualiza a prévia, os intervalos e a transcrição em memória.
-
-### 4. Remover outros intervalos
-
-Repita a marcação quantas vezes forem necessárias. A linha do tempo representa:
+O corte ainda não é gravado no disco nessa etapa: a interface apenas atualiza a prévia, os blocos e a transcrição em memória. A linha do tempo representa:
 
 - verde: blocos mantidos, numerados e com sua duração;
 - vermelho hachurado: trechos removidos;
 - contorno branco grosso: bloco selecionado;
-- moldura branca: intervalo de entrada e saída;
 - linha branca com alça: cursor de reprodução.
 
-Para cortes rápidos, prefira as ferramentas de bloco: posicione o cursor e use `Ctrl+B`, `Q`, `W` ou selecione um bloco e pressione `Delete`.
-
-### 5. Desfazer um corte
+### 4. Desfazer um corte
 
 Use **Desfazer** para voltar ao estado anterior à última divisão ou remoção, e **Refazer** para reaplicá-la.
 
@@ -276,7 +159,7 @@ O histórico de desfazer:
 
 Para reverter um salvamento concluído, restaure manualmente uma versão de `.history`.
 
-### 6. Salvar
+### 5. Salvar
 
 1. Clique em **Salvar alterações**.
 2. Confira a duração que será removida.
@@ -293,11 +176,12 @@ Depois do salvamento:
 
 Se somente o texto foi alterado, o FFmpeg não é executado e apenas o TXT e os tokens são atualizados. Mesmo assim, uma cópia do trio anterior é armazenada no histórico.
 
-### 7. Excluir o segmento inteiro
+### 6. Excluir o segmento inteiro
 
-1. Clique em **Excluir clipe** no final da tela.
-2. Confirme a exclusão do MP4, WAV e TXT.
-3. O trio deixa de aparecer na biblioteca e sua linha é removida do CSV de labels.
+1. Clique no botão **⋯** no canto do cabeçalho do preview.
+2. Escolha **Excluir clipe…**.
+3. Confirme a exclusão do MP4, WAV e TXT.
+4. O trio deixa de aparecer na biblioteca, sua linha é removida do CSV de labels e o editor abre o próximo segmento.
 
 Os arquivos e a linha do CSV são copiados para `.trash` antes de serem removidos.
 

@@ -8,7 +8,6 @@ import {
   deleteRightRange,
   formatTimecode,
   frameToTime,
-  playableFrame,
   removeFrames,
   segmentAt,
   splitAt,
@@ -68,7 +67,6 @@ function App() {
   const [text, setText] = useState('');
   const [segments, setSegments] = useState([]);
   const [selectedSegment, setSelectedSegment] = useState(null);
-  const [selection, setSelection] = useState({start: 0, end: 0});
   const [history, setHistory] = useState([]);
   const [future, setFuture] = useState([]);
   const [volume, setVolume] = useState(0.85);
@@ -76,6 +74,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [clipMenu, setClipMenu] = useState(false);
   const [revision, setRevision] = useState(0);
   const [videoElement, setVideoElement] = useState(null);
   const [audioElement, setAudioElement] = useState(null);
@@ -111,7 +110,6 @@ function App() {
       setText(data.text);
       setSegments(createSegments(frames));
       setSelectedSegment(null);
-      setSelection({start: 0, end: frames});
       setHistory([]);
       setFuture([]);
       setDirty(false);
@@ -121,6 +119,27 @@ function App() {
     });
     return () => { active = false; };
   }, [selected, revision]);
+
+  // O menu do clipe fecha com Esc ou com um clique fora dele.
+  useEffect(() => {
+    if (!clipMenu) return;
+    const close = (event) => {
+      if (event.type === 'keydown' ? event.key === 'Escape' : !event.target.closest?.('.clip-menu')) setClipMenu(false);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, [clipMenu]);
+
+  // Avisos somem sozinhos; erros ficam mais tempo para dar tempo de ler.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), notice.type === 'error' ? 6000 : 3000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (audioElement) audioElement.volume = volume;
@@ -148,7 +167,7 @@ function App() {
     if (end <= start) return null;
     const next = removeFrames(segments, start, end);
     if (!next.length) {
-      setNotice({type: 'error', text: 'Para remover tudo, use “Excluir clipe”.'});
+      setNotice({type: 'error', text: 'Para remover tudo, use “Excluir clipe” no menu ⋯ do preview.'});
       return null;
     }
     checkpoint();
@@ -182,26 +201,6 @@ function App() {
 
   const deleteSelected = () => {
     if (selectedBlock && removeFrameRange(selectedBlock.start, selectedBlock.end)) setSelectedSegment(null);
-  };
-
-  const removeSelection = () => {
-    if (selection.end - selection.start < 1) {
-      return setNotice({type: 'error', text: 'Marque um intervalo com pelo menos 1 quadro.'});
-    }
-    const next = removeFrameRange(selection.start, selection.end);
-    if (!next) return;
-    pause();
-    seekToFrame(playableFrame(next, selection.end));
-  };
-
-  const markIn = () => setSelection((value) => ({...value, start: Math.min(currentFrame, value.end - 1)}));
-  // A saída inclui o quadro em exibição, como em editores de vídeo.
-  const markOut = () => setSelection((value) => ({...value, end: Math.max(currentFrame + 1, value.start + 1)}));
-  const setSelectionSeconds = (edge, seconds) => {
-    const frame = Math.max(0, Math.min(totalFrames, Math.round(Number(seconds) * fps)));
-    setSelection((value) => edge === 'start'
-      ? {...value, start: Math.min(frame, value.end - 1)}
-      : {...value, end: Math.max(frame, value.start + 1)});
   };
 
   const undo = () => {
@@ -253,8 +252,6 @@ function App() {
       else if (key === 'q') deleteLeft();
       else if (key === 'w') deleteRight();
       else if (key === 'delete' || key === 'backspace') deleteSelected();
-      else if (key === 'i') markIn();
-      else if (key === 'o') markOut();
       else return false;
       return true;
     };
@@ -294,9 +291,13 @@ function App() {
   };
 
   const deleteClip = async () => {
+    setClipMenu(false);
     if (!clip || !window.confirm(`Excluir ${clip.id}.mp4, .wav e .txt?`)) return;
     pause();
     setSaving(true);
+    // Depois de excluir, segue para o clipe vizinho na lista.
+    const index = library.items.findIndex((item) => item.id === clip.id);
+    const neighbor = library.items[index + 1] ?? library.items[index - 1] ?? null;
     try {
       const result = await api(`/api/clips/${clip.id}`, {method: 'DELETE'});
       const removed = 'Clipe e arquivos associados removidos. Uma cópia foi enviada à lixeira do dataset.';
@@ -304,7 +305,7 @@ function App() {
         ? {type: 'error', text: `${removed}${LABELS_MISSING}`}
         : {type: 'success', text: `${removed} A linha do CSV de labels também foi removida.`});
       setClip(null);
-      setSelected(null);
+      setSelected(neighbor?.id ?? null);
       await loadLibrary(library.page);
     } catch (error) { setNotice({type: 'error', text: error.message}); }
     finally { setSaving(false); }
@@ -394,6 +395,15 @@ function App() {
           <span>
             {clip.done && <b className="done-badge" title={clip.doneAt ? `Concluído em ${new Date(clip.doneAt).toLocaleString('pt-BR')}` : undefined}>✓ CONCLUÍDO</b>}
             {clip.id}.mp4
+            <span className="clip-menu">
+              <button
+                className="clip-menu-toggle" onClick={() => setClipMenu((open) => !open)} disabled={saving}
+                aria-haspopup="menu" aria-expanded={clipMenu} aria-label="Mais ações do clipe" title="Mais ações"
+              >⋯</button>
+              {clipMenu && <span className="clip-menu-list" role="menu">
+                <button role="menuitem" className="danger" onClick={deleteClip}>Excluir clipe…<small>Remove o MP4, WAV e TXT associados.</small></button>
+              </span>}
+            </span>
           </span>
         </div>
         <div className="stage">
@@ -433,23 +443,10 @@ function App() {
         </div>
         <Timeline
           fps={fps} totalFrames={totalFrames} segments={segments} selectedId={selectedSegment}
-          currentFrame={currentFrame} selection={selection} tools={tools}
+          currentFrame={currentFrame} tools={tools}
           onSeek={seekToFrame} onScrubStart={pause} onSelectSegment={setSelectedSegment}
         />
-        <div className="cut-controls">
-          <label>ENTRADA <input type="number" min="0" max={duration} step={1 / fps} value={Number(frameToTime(selection.start, fps).toFixed(3))} onChange={(event) => setSelectionSeconds('start', event.target.value)} /></label>
-          <button className="mark" onClick={markIn} title="Tecla I">Marcar entrada</button>
-          <span className="cut-arrow">→</span>
-          <label>SAÍDA <input type="number" min="0" max={duration} step={1 / fps} value={Number(frameToTime(selection.end, fps).toFixed(3))} onChange={(event) => setSelectionSeconds('end', event.target.value)} /></label>
-          <button className="mark" onClick={markOut} title="Tecla O (inclui o quadro atual)">Marcar saída</button>
-          <button className="button danger" onClick={removeSelection}><Icon>✂</Icon> Remover intervalo</button>
-        </div>
       </section>
-
-      <footer className="danger-zone">
-        <div><strong>Excluir clipe completo</strong><span>Remove o MP4, WAV e TXT associados.</span></div>
-        <button onClick={deleteClip} disabled={saving}>Excluir clipe</button>
-      </footer>
     </main>}
 
     {notice && <div className={`toast ${notice.type}`} role="status"><span>{notice.type === 'success' ? '✓' : '!'}</span>{notice.text}<button onClick={() => setNotice(null)}>×</button></div>}
