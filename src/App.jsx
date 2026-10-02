@@ -74,6 +74,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [clipMenu, setClipMenu] = useState(false);
   const [revision, setRevision] = useState(0);
   const [videoElement, setVideoElement] = useState(null);
   const [audioElement, setAudioElement] = useState(null);
@@ -119,6 +120,20 @@ function App() {
     return () => { active = false; };
   }, [selected, revision]);
 
+  // O menu do clipe fecha com Esc ou com um clique fora dele.
+  useEffect(() => {
+    if (!clipMenu) return;
+    const close = (event) => {
+      if (event.type === 'keydown' ? event.key === 'Escape' : !event.target.closest?.('.clip-menu')) setClipMenu(false);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, [clipMenu]);
+
   // Avisos somem sozinhos; erros ficam mais tempo para dar tempo de ler.
   useEffect(() => {
     if (!notice) return;
@@ -152,7 +167,7 @@ function App() {
     if (end <= start) return null;
     const next = removeFrames(segments, start, end);
     if (!next.length) {
-      setNotice({type: 'error', text: 'O segmento precisa manter pelo menos um quadro.'});
+      setNotice({type: 'error', text: 'Para remover tudo, use “Excluir clipe” no menu ⋯ do preview.'});
       return null;
     }
     checkpoint();
@@ -275,6 +290,27 @@ function App() {
     finally { setSaving(false); }
   };
 
+  const deleteClip = async () => {
+    setClipMenu(false);
+    if (!clip || !window.confirm(`Excluir ${clip.id}.mp4, .wav e .txt?`)) return;
+    pause();
+    setSaving(true);
+    // Depois de excluir, segue para o clipe vizinho na lista.
+    const index = library.items.findIndex((item) => item.id === clip.id);
+    const neighbor = library.items[index + 1] ?? library.items[index - 1] ?? null;
+    try {
+      const result = await api(`/api/clips/${clip.id}`, {method: 'DELETE'});
+      const removed = 'Clipe e arquivos associados removidos. Uma cópia foi enviada à lixeira do dataset.';
+      setNotice(result.labels === 'missing'
+        ? {type: 'error', text: `${removed}${LABELS_MISSING}`}
+        : {type: 'success', text: `${removed} A linha do CSV de labels também foi removida.`});
+      setClip(null);
+      setSelected(neighbor?.id ?? null);
+      await loadLibrary(library.page);
+    } catch (error) { setNotice({type: 'error', text: error.message}); }
+    finally { setSaving(false); }
+  };
+
   const toggleDone = async () => {
     if (!clip || marking) return;
     const done = !clip.done;
@@ -359,6 +395,15 @@ function App() {
           <span>
             {clip.done && <b className="done-badge" title={clip.doneAt ? `Concluído em ${new Date(clip.doneAt).toLocaleString('pt-BR')}` : undefined}>✓ CONCLUÍDO</b>}
             {clip.id}.mp4
+            <span className="clip-menu">
+              <button
+                className="clip-menu-toggle" onClick={() => setClipMenu((open) => !open)} disabled={saving}
+                aria-haspopup="menu" aria-expanded={clipMenu} aria-label="Mais ações do clipe" title="Mais ações"
+              >⋯</button>
+              {clipMenu && <span className="clip-menu-list" role="menu">
+                <button role="menuitem" className="danger" onClick={deleteClip}>Excluir clipe…<small>Remove o MP4, WAV e TXT associados.</small></button>
+              </span>}
+            </span>
           </span>
         </div>
         <div className="stage">

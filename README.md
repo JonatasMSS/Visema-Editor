@@ -2,7 +2,7 @@
 
 Editor local de segmentos audiovisuais para datasets compostos por um vídeo, um áudio e uma transcrição textual com o mesmo nome-base.
 
-O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `segmento_XXXXX.mp4` é associado ao `segmento_XXXXX.wav` e ao `segmento_XXXXX.txt`. A interface permite localizar e visualizar o segmento, reproduzir vídeo e áudio em sincronia, editar a transcrição e remover trechos pela linha do tempo.
+O projeto trabalha diretamente com a estrutura atual de `dataset_root`: cada `segmento_XXXXX.mp4` é associado ao `segmento_XXXXX.wav` e ao `segmento_XXXXX.txt`. A interface permite localizar e visualizar o segmento, reproduzir vídeo e áudio em sincronia, editar a transcrição, remover trechos pela linha do tempo e excluir o trio completo.
 
 > **Atenção:** o editor altera arquivos do dataset. Antes de substituir ou excluir conteúdo, ele cria uma cópia de segurança local, mas ainda é recomendável manter um backup externo do dataset.
 
@@ -66,12 +66,12 @@ O sistema usa o WAV como fonte de áudio. O MP4 esperado pelo dataset pode conte
 - O editor mostra a quantidade atual de palavras.
 - Ao remover um intervalo audiovisual, tenta remover as palavras correspondentes àquele momento.
 - A edição é salva em UTF-8 no arquivo `.txt` associado, normalizada como no dataset original: maiúsculas, NFC e espaços simples.
-- A transcrição não pode ficar vazia.
+- A transcrição não pode ficar vazia; para descartar o segmento, use **Excluir clipe**.
 
 ### Labels sincronizados
 
 - Salvar recalcula os tokens SentencePiece do texto e o número de quadros do vídeo e atualiza a linha do segmento no CSV de labels.
-- Excluir o clipe pela API remove a linha correspondente do CSV.
+- Excluir o clipe remove a linha correspondente do CSV.
 - `npm run labels` reprocessa todos os CSVs de uma vez. Detalhes em [Labels (CSVs)](#labels-csvs).
 
 ### Linha do tempo por blocos
@@ -103,7 +103,17 @@ Dividir um bloco não altera a mídia por si só: blocos adjacentes são fundido
 - Permite remover mais de um trecho antes de salvar.
 - Exibe quais partes serão mantidas e quais serão removidas.
 - Mostra as durações totais mantida e removida.
-- Impede remover todos os quadros de um segmento.
+- Impede remover todos os quadros de um segmento. Para remover tudo, deve-se usar **Excluir clipe**.
+
+### Exclusão completa
+
+A opção **Excluir clipe** fica no menu **⋯** do cabeçalho do preview, longe dos botões de uso frequente, e pede confirmação. Ela remove em conjunto:
+
+- `segmento_XXXXX.mp4`;
+- `segmento_XXXXX.wav`;
+- `segmento_XXXXX.txt`.
+
+Depois da exclusão, o editor abre o segmento seguinte da lista.
 
 ## Como usar
 
@@ -165,6 +175,15 @@ Depois do salvamento:
 - o segmento é recarregado com sua nova duração e o texto normalizado.
 
 Se somente o texto foi alterado, o FFmpeg não é executado e apenas o TXT e os tokens são atualizados. Mesmo assim, uma cópia do trio anterior é armazenada no histórico.
+
+### 6. Excluir o segmento inteiro
+
+1. Clique no botão **⋯** no canto do cabeçalho do preview.
+2. Escolha **Excluir clipe…**.
+3. Confirme a exclusão do MP4, WAV e TXT.
+4. O trio deixa de aparecer na biblioteca, sua linha é removida do CSV de labels e o editor abre o próximo segmento.
+
+Os arquivos e a linha do CSV são copiados para `.trash` antes de serem removidos.
 
 ## Como o corte funciona
 
